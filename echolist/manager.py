@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import os
 import shutil
+import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -424,12 +425,12 @@ class PlaylistManager:
 
         return save_backup(self.writer.root, pid, timestamp, new_data)
 
-    def fix_playlist_metadata(self, pid: str) -> int:
+    def fix_playlist_metadata(self, pid: str) -> dict:
         """Fix metadata on tracks that don't match expectations. Backs up first.
-        Returns the number of tracks fixed."""
+        Returns {"fixed": int, "failed": [(path, error), ...]}."""
         issues = self.audit_playlist_metadata(pid)
         if not issues:
-            return 0
+            return {"fixed": 0, "failed": []}
 
         self.backup_playlist_metadata(pid)
 
@@ -450,9 +451,16 @@ class PlaylistManager:
             fix_jobs.append((track_path, t["index"], t.get("src_path", "")))
 
         album = self.config.album_prefix + playlist["name"]
+        failed: list[tuple[str, str]] = []
+
         def _apply(job):
             path, index, src_rel = job
-            apply_playlist_tags(path, self.config.node_name, album, index, src_rel, pid)
+            try:
+                apply_playlist_tags(path, self.config.node_name, album, index, src_rel, pid)
+            except Exception as e:
+                # _TagError (bad/truncated file, missing moov atom, ...) or any
+                # other per-track failure: record it, keep fixing the rest.
+                failed.append((str(path), str(e)))
 
         with ThreadPoolExecutor(max_workers=_MAX_TAG_WORKERS) as pool:
             list(pool.map(_apply, fix_jobs))
@@ -460,7 +468,14 @@ class PlaylistManager:
         self._renumber_tracks(pid)
         self.store.save()
 
-        return len(fixed_files)
+        if failed:
+            print(
+                f"[echolist] fix_playlist_metadata: {len(failed)} track(s) could not "
+                f"be tagged ({failed[0][0]}: {failed[0][1]})",
+                file=sys.stderr,
+            )
+
+        return {"fixed": len(fixed_files) - len(failed), "failed": failed}
 
     def restore_playlist_metadata(self, pid: str, timestamp: str | None = None) -> int:
         """Restore original metadata from backup. Returns number of tracks restored.

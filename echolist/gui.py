@@ -2426,12 +2426,25 @@ class App:
             def fix():
                 return self.mgr.fix_playlist_metadata(pid)
 
-            def on_done(fixed):
+            def on_done(result):
                 self._invalidate_caches(pid)
                 self._refresh_playlists_menu()
                 self.fix_meta_btn.pack_forget()
                 self._refresh_tracks()
-                if fixed:
+                fixed = result["fixed"] if isinstance(result, dict) else result
+                failed = result["failed"] if isinstance(result, dict) else []
+                if failed:
+                    detail = "\n".join(f"  - {path}: {err}" for path, err in failed[:10])
+                    if len(failed) > 10:
+                        detail += f"\n  ... and {len(failed) - 10} more"
+                    messagebox.showwarning(
+                        "Some tracks could not be updated",
+                        f"Updated metadata on {fixed} track(s), but {len(failed)} "
+                        f"track(s) could not be tagged:\n\n{detail}\n\n"
+                        f"A restore point has been saved. The files above may be "
+                        f"corrupted or in an unsupported format.",
+                    )
+                elif fixed:
                     messagebox.showinfo(
                         "Metadata updated",
                         f"Updated metadata on {fixed} track(s).\n\n"
