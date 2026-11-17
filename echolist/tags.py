@@ -92,8 +92,10 @@ def restore_tags(path: Path, tags: dict) -> None:
                 elif field in t:
                     del t[field]
             t.save(path)
-    except Exception:
-        pass
+    except _TagError:
+        raise
+    except Exception as e:
+        raise _TagError(f"cannot restore tags on {path}: {e}") from e
 
 
 def _extract_year(raw: str) -> str:
@@ -151,7 +153,10 @@ def _tag_flac(
     f["ECHOLIST_PLAYLIST"] = pid
     f["ECHOLIST_INDEX"] = str(index)
     f["ECHOLIST_SRC"] = src_rel
-    f.save()
+    try:
+        f.save()
+    except Exception as e:
+        raise _TagError(f"cannot write tags to {path}: {e}") from e
 
 
 _EASY_STRIP_TAGS = frozenset({
@@ -165,20 +170,31 @@ _EASY_STRIP_TAGS = frozenset({
 })
 
 
+class _TagError(Exception):
+    """Raised when a track's tags cannot be read or written."""
+
+
 def _tag_easy(easy_cls, path: Path, node_name: str, album: str, index: int) -> None:
     try:
-        tags = easy_cls(path)
-    except mutagen.MutagenError:
-        tags = easy_cls()
-        tags.filename = str(path)
-    for tag in _EASY_STRIP_TAGS:
-        if tag in tags:
-            del tags[tag]
-    tags["albumartist"] = node_name
-    tags["album"] = album
-    tags["tracknumber"] = str(index)
-    tags["discnumber"] = "1"
-    date = (tags.get("date") or [""])[0]
-    if date:
-        tags["date"] = _extract_year(date)
-    tags.save(path)
+        try:
+            tags = easy_cls(path)
+        except mutagen.MutagenError:
+            tags = easy_cls()
+            tags.filename = str(path)
+        for tag in _EASY_STRIP_TAGS:
+            if tag in tags:
+                del tags[tag]
+        tags["albumartist"] = node_name
+        tags["album"] = album
+        tags["tracknumber"] = str(index)
+        tags["discnumber"] = "1"
+        date = (tags.get("date") or [""])[0]
+        if date:
+            tags["date"] = _extract_year(date)
+        tags.save(path)
+    except Exception as e:
+        # Some MP4/M4A/AAC files (missing 'moov' atom, truncated, non-audio
+        # MP4, etc.) can't be tagged cleanly. mutagen may raise non-MutagenError
+        # exceptions (KeyError, ValueError, raw mutagen.error, ...). Never let a
+        # single bad file crash the whole fix/sync operation.
+        raise _TagError(f"cannot write tags to {path}: {e}") from e
